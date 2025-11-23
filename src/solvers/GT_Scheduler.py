@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import random
 from collections import defaultdict
 from typing import Literal, List, Dict, Optional
@@ -225,48 +226,233 @@ class Scheduler:
         return dict(machine_candidates)
 
 
-    def get_schedule(self, priority_rule: Literal["SPT", "FCFS", "EDD", "MWKR", "SLACK", "DEVIATION"] = "SPT", add_overlap_to_conflict: bool = True):
+    def get_schedule(
+        self,
+        priority_rule: Literal[
+            "SPT", "FCFS", "EDD", "MWKR", "SLACK", "DEVIATION", "DEVIATION_INSERT"
+        ] = "SPT",
+        add_overlap_to_conflict: bool = False,
+        plot_gantt: bool = False,
+        gantt_path: Optional[str] = None,
+    ):
+ 
+
         schedule_job_collection = LiveJobCollection()
         planned = 0
-        while planned < self.total_ops:
-            machine_candidates = self.get_machine_candidates()
-            all_candidates = [cand for ops in machine_candidates.values() for cand in ops]
 
-            if not all_candidates:
-                # Nichts planbar -> hier ggf. Zeit vorspulen oder sauber abbrechen
+        def _has_unscheduled_ops() -> bool:
+            """Prüft, ob noch Operationen ohne Startzeit existieren."""
+            for job in self.jobs_collection.values():
+                for op in job.operations:
+                    if op.start is None:
+                        return True
+            return False
+
+        # ------------------------------------------------------
+        # Hauptschleife
+        # ------------------------------------------------------
+        while planned < self.total_ops and _has_unscheduled_ops():
+
+            # 1) nächste planbare Operationen pro Job finden
+            next_ops = []  # (job, idx, earliest_start, op)
+
+            for job in self.jobs_collection.values():
+                ops = job.operations
+                for idx, op in enumerate(ops):
+                    if op.start is None:
+                        # Vorgänger-Ende
+                        if idx > 0:
+                            prev_op = ops[idx - 1]
+                            if prev_op.end is None:
+                                break  # Vorgänger nicht geplant → Job blockiert
+                            earliest_start = int(prev_op.end)
+                        else:
+                            earliest_start = max(
+                                job.current_operation_earliest_start,
+                                job.earliest_start,
+                                self.schedule_start,
+                            )
+
+                        next_ops.append((job, idx, earliest_start, op))
+                        break  # pro Job nur die erste ungeschedulte Operation
+
+            if not next_ops:
                 break
 
-            earliest_end_t = min(op.end for op in all_candidates)
+            # 2) Konfliktmengen pro Maschine
+            conflict_ops_per_machine: Dict[str, list] = {}
 
-            for machine, ops in machine_candidates.items():
-                ending_at_T = [op for op in ops if op.end == earliest_end_t]
-                if not ending_at_T:
+            for job, idx, earliest_start, op in next_ops:
+                m = op.machine_name
+                m_available = self.machine_ready_time.get(m, self.schedule_start)
+
+                start_time = max(earliest_start, m_available)
+                end_time = start_time + op.duration
+
+                if m not in conflict_ops_per_machine:
+                    conflict_ops_per_machine[m] = []
+                conflict_ops_per_machine[m].append(
+                    (job, idx, start_time, end_time, op)
+                )
+
+            # 3) global dmin = früheste Endzeit aller Kandidaten
+            all_candidates = [
+                (job, idx, start_time, end_time, op)
+                for lst in conflict_ops_per_machine.values()
+                for (job, idx, start_time, end_time, op) in lst
+            ]
+            if not all_candidates:
+                break
+
+            dmin = min(end_time for (_, _, _, end_time, _) in all_candidates)
+
+            # 4) pro Maschine: Konfliktmenge K_m und Prioritätswahl
+            selected_per_machine = []  # (op, end_time)
+
+            for m, candidates in conflict_ops_per_machine.items():
+                # Konfliktmenge K_m = alle Ops mit Start < dmin
+                K = [
+                    (job, idx, start_time, end_time, op)
+                    for (job, idx, start_time, end_time, op) in candidates
+                    if start_time < dmin
+                ]
+                if not K:
                     continue
 
-                conflict_ops = ending_at_T.copy()
-
-                if add_overlap_to_conflict:
-                    for o in ops:
-                        if o in ending_at_T:
-                            continue
-                        # überlappt mit mind. einem aus ending_at_T?
-                        if any(self.intervals_overlap(o, ending_op) for ending_op in ending_at_T):
-                            conflict_ops.append(o)
+                # start/end in Operation speichern
+                conflict_ops = []
+                for job, idx, start_time, end_time, op in K:
+                    op.start = start_time
+                    op.end = end_time
+                    conflict_ops.append(op)
 
                 # Auswahl nach Prioritätsregel
                 selected_op = self.select_by_priority(conflict_ops, priority_rule)
+                if selected_op is None:
+                    continue
 
-                # print(f"Selected: {selected_op.start = }, {selected_op.end = }")
+                # Endzeit des ausgewählten Ops besorgen
+                selected_end = None
+                for _, _, s_start, s_end, s_op in K:
+                    if s_op is selected_op:
+                        selected_end = s_end
+                        break
 
-                if selected_op is not None:
+                if selected_end is None:
+                    continue
 
-                    job = selected_op.job
-                    job.current_operation = job.get_next_operation(selected_op.position_number)
-                    job.current_operation_earliest_start = selected_op.end
+                selected_per_machine.append((selected_op, selected_end))
 
-                    planned += 1
-                    self.machine_ready_time[machine] = selected_op.end
+            if not selected_per_machine:
+                break
 
-                    schedule_job_collection.add_operation_instance(selected_op)
+            # 5) global die Operation mit kleinster Endzeit einplanen
+            op_to_schedule, op_end = min(selected_per_machine, key=lambda t: t[1])
+            job = op_to_schedule.job
+            machine = op_to_schedule.machine_name
+
+            # Falls start/end nicht gesetzt (shouldn't happen)
+            if op_to_schedule.start is None or op_to_schedule.end is None:
+                m_available = self.machine_ready_time.get(machine, self.schedule_start)
+                earliest_start = max(
+                    job.current_operation_earliest_start,
+                    job.earliest_start,
+                    self.schedule_start,
+                )
+                start_time = max(earliest_start, m_available)
+                op_to_schedule.start = start_time
+                op_to_schedule.end = start_time + op_to_schedule.duration
+                op_end = op_to_schedule.end
+
+            # fest einplanen
+            schedule_job_collection.add_operation_instance(op_to_schedule)
+            planned += 1
+
+            # Maschine blockieren
+            self.machine_ready_time[machine] = int(op_end)
+
+            # nächste Operation des Jobs vorbereiten
+            next_op = job.get_next_operation(op_to_schedule.position_number)
+            job.current_operation = next_op
+            if next_op is not None:
+                job.current_operation_earliest_start = int(op_end)
+
+        # ------------------------------------------------------
+        # Optional: Gantt-Diagramm erzeugen
+        # ------------------------------------------------------
+        if plot_gantt:
+            # Schedule in flache Liste bringen: (job_id, op_pos, machine, start, end)
+            gantt_rows = []
+            for job in schedule_job_collection.values():
+                for op in job.operations:
+                    if op.start is None or op.end is None:
+                        continue
+                    gantt_rows.append(
+                        (
+                            job.id,
+                            op.position_number,
+                            op.machine_name,
+                            int(op.start),
+                            int(op.end),
+                        )
+                    )
+
+            if gantt_rows:
+                # nach Maschine, dann Start sortieren
+                gantt_rows.sort(key=lambda x: (x[2], x[3]))
+
+                machines = sorted({row[2] for row in gantt_rows})
+                job_ids = sorted({row[0] for row in gantt_rows})
+
+                colors_palette = [
+                    "tab:blue",
+                    "tab:orange",
+                    "tab:green",
+                    "tab:red",
+                    "tab:purple",
+                    "tab:brown",
+                    "tab:pink",
+                    "tab:gray",
+                    "tab:olive",
+                    "tab:cyan",
+                ]
+                job_colors = {
+                    job_id: colors_palette[i % len(colors_palette)]
+                    for i, job_id in enumerate(job_ids)
+                }
+
+                fig, ax = plt.subplots(figsize=(12, 6))
+
+                for job_id, op_pos, m, start, end in gantt_rows:
+                    color = job_colors[job_id]
+                    ax.barh(
+                        f"Maschine {m}",
+                        end - start,
+                        left=start,
+                        color=color,
+                        edgecolor="black",
+                    )
+                    ax.text(
+                        start + (end - start) / 2,
+                        f"Maschine {m}",
+                        f"Job {job_id}",
+                        va="center",
+                        ha="center",
+                        color="white",
+                        fontsize=9,
+                    )
+
+                ax.set_xlabel("Zeit")
+                ax.set_ylabel("Maschinen")
+                ax.set_title(f"Gantt-Diagramm – GT ({priority_rule})")
+                ax.grid(True, axis="x", linestyle="--", alpha=0.6)
+                plt.tight_layout()
+
+                if gantt_path:
+                    plt.savefig(gantt_path, dpi=300)
+                    print(f"Gantt-Diagramm gespeichert als {gantt_path}")
+
+                plt.show()
 
         return schedule_job_collection
+
