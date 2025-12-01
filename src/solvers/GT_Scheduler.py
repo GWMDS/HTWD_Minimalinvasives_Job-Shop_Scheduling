@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import random
 from collections import defaultdict
 from typing import Literal, List, Dict, Optional
@@ -231,9 +230,6 @@ class Scheduler:
         priority_rule: Literal[
             "SPT", "FCFS", "EDD", "MWKR", "SLACK", "DEVIATION", "DEVIATION_INSERT"
         ] = "SPT",
-        add_overlap_to_conflict: bool = False,
-        plot_gantt: bool = False,
-        gantt_path: Optional[str] = None,
     ):
  
 
@@ -376,83 +372,6 @@ class Scheduler:
             job.current_operation = next_op
             if next_op is not None:
                 job.current_operation_earliest_start = int(op_end)
-
-        # ------------------------------------------------------
-        # Optional: Gantt-Diagramm erzeugen
-        # ------------------------------------------------------
-        if plot_gantt:
-            # Schedule in flache Liste bringen: (job_id, op_pos, machine, start, end)
-            gantt_rows = []
-            for job in schedule_job_collection.values():
-                for op in job.operations:
-                    if op.start is None or op.end is None:
-                        continue
-                    gantt_rows.append(
-                        (
-                            job.id,
-                            op.position_number,
-                            op.machine_name,
-                            int(op.start),
-                            int(op.end),
-                        )
-                    )
-
-            if gantt_rows:
-                # nach Maschine, dann Start sortieren
-                gantt_rows.sort(key=lambda x: (x[2], x[3]))
-
-                machines = sorted({row[2] for row in gantt_rows})
-                job_ids = sorted({row[0] for row in gantt_rows})
-
-                colors_palette = [
-                    "tab:blue",
-                    "tab:orange",
-                    "tab:green",
-                    "tab:red",
-                    "tab:purple",
-                    "tab:brown",
-                    "tab:pink",
-                    "tab:gray",
-                    "tab:olive",
-                    "tab:cyan",
-                ]
-                job_colors = {
-                    job_id: colors_palette[i % len(colors_palette)]
-                    for i, job_id in enumerate(job_ids)
-                }
-
-                fig, ax = plt.subplots(figsize=(12, 6))
-
-                for job_id, op_pos, m, start, end in gantt_rows:
-                    color = job_colors[job_id]
-                    ax.barh(
-                        f"Maschine {m}",
-                        end - start,
-                        left=start,
-                        color=color,
-                        edgecolor="black",
-                    )
-                    ax.text(
-                        start + (end - start) / 2,
-                        f"Maschine {m}",
-                        f"Job {job_id}",
-                        va="center",
-                        ha="center",
-                        color="white",
-                        fontsize=9,
-                    )
-
-                ax.set_xlabel("Zeit")
-                ax.set_ylabel("Maschinen")
-                ax.set_title(f"Gantt-Diagramm – GT ({priority_rule})")
-                ax.grid(True, axis="x", linestyle="--", alpha=0.6)
-                plt.tight_layout()
-
-                if gantt_path:
-                    plt.savefig(gantt_path, dpi=300)
-                    print(f"Gantt-Diagramm gespeichert als {gantt_path}")
-
-                plt.show()
 
         return schedule_job_collection
 
