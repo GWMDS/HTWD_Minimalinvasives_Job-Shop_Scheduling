@@ -200,7 +200,7 @@ def run_experiment(
         scheduler.set_previous_schedule_jobs_collection(previous_schedule_snapshot)
 
         # Planen
-        current_schedule_result = scheduler.get_schedule(priority_rule=priority_rule)
+        current_schedule_result = scheduler.get_schedule(priority_rule=priority_rule, shift_end=shift_end)
 
         # Snapshot für nächste Runde sichern
         previous_schedule_snapshot = create_schedule_snapshot(current_schedule_result)
