@@ -212,27 +212,28 @@ def run_experiment(
         scheduler.set_previous_schedule_jobs_collection(previous_schedule_snapshot)
 
         current_schedule_result = scheduler.get_schedule(priority_rule=priority_rule)
-
+        
         # C) Backlog für nächste Runde berechnen
         backlog_jobs_list = get_unscheduled_backlog(current_jobs_collection, current_schedule_result)
         if backlog_jobs_list:
             print(f"-> {len(backlog_jobs_list)} Jobs wegen Zeitlimit in nächste Schicht verschoben.")
 
         # D) Metriken
+        # C) Metriken
         if shift_number > 1 and calculate_stability_metrics:
             metrics = calculate_stability_metrics(current_schedule_result, previous_schedule_snapshot)
-            print(f"📊 Metriken: PSR={metrics['PSR']:.1f}% | StartDev={metrics['StartDev_Avg']:.1f}")
+            
+            # Erweiterter Print
+            print(f"   Masch-Stab: SlotDev={metrics['SlotDev_Avg']:.1f}m | HitRate={metrics['SlotHit_Rate']:.1f}%")
             
             metrics_records.append({
-                "Experiment_ID": experiment_id, "Priority_Rule": priority_rule, "Shift": shift_number,
+                "Experiment_ID": experiment_id, 
+                "Priority_Rule": priority_rule, 
+                "Shift": shift_number,
                 "Comparison": "Vs_Previous_Shift",
-                "StartDev_Total": metrics['StartDev_Total'], "StartDev_Avg": metrics['StartDev_Avg'], 
-                "SeqDev_Swaps": metrics['SeqDev_Swaps'], "PSR": metrics['PSR']
-            })
-        elif shift_number == 1:
-             metrics_records.append({
-                "Experiment_ID": experiment_id, "Priority_Rule": priority_rule, "Shift": 1,
-                "Comparison": "Initial", "StartDev_Total": 0, "StartDev_Avg": 0, "SeqDev_Swaps": 0, "PSR": 100
+                # NEUE METRIKEN
+                "SlotDev_Avg": metrics['SlotDev_Avg'],
+                "SlotHit_Rate": metrics['SlotHit_Rate']
             })
 
         # Snapshot Management

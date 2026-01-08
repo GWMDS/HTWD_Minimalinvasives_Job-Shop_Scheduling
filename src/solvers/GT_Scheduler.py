@@ -13,8 +13,9 @@ class Scheduler:
         self.previous_schedule_jobs_collection = LiveJobCollection()
         self.active_jobs_collection = LiveJobCollection()
 
-        # Cache für MACHINE_SLOT Regel
+        # Cache
         self.machine_slots: Dict[str, List[int]] = defaultdict(list)
+        self.machine_slot_durations: Dict[str, List[int]] = defaultdict(list) # <--- NEU: Fehlte auch!
 
         # Maschinennamen bereinigen
         raw_machines = jobs_collection.get_unique_machine_names()
@@ -23,19 +24,25 @@ class Scheduler:
         self.machine_ready_time: Dict[str, int] = {m: schedule_start for m in self.machines}
         
         self.schedule_start = schedule_start
-        # NEU: Das Ende der Schicht (Hard Limit). Wenn None -> Unendlich.
         self.schedule_end = schedule_end if schedule_end is not None else float('inf')
         
         self.total_ops = jobs_collection.count_operations()
 
-        # Reset aller Operationen (Dirty State Prevention)
+        # --- FIX: METRIKEN INITIALISIEREN ---
+        self.metrics = {
+            "total_decisions": 0,
+            "real_choices": 0,
+            "slot_rule_decisions": 0
+        }
+        # ------------------------------------
+
+        # Reset
         for job in self.jobs_collection.values():
             for op in job.operations:
                 if op.machine_name:
                     op.machine_name = str(op.machine_name).strip()
                 op.start = None
                 op.end = None
-                # Temporäre Attribute aufräumen
                 if hasattr(op, 'temp_start'): del op.temp_start
                 if hasattr(op, 'temp_end'): del op.temp_end
                 if hasattr(op, '_tmp_prev_start'): del op._tmp_prev_start
@@ -75,16 +82,21 @@ class Scheduler:
     def set_previous_schedule_jobs_collection(self, previous_schedule_jobs_collection: LiveJobCollection):
         self.previous_schedule_jobs_collection = previous_schedule_jobs_collection
         
-        # Slots für MACHINE_SLOT vorberechnen
-        self.machine_slots = defaultdict(list)
+        # Slots UND Dauern vorberechnen
+        temp_slots = defaultdict(list)
         for job in previous_schedule_jobs_collection.values():
             for op in job.operations:
                 if op.start is not None and op.machine_name:
                     m_name = str(op.machine_name).strip()
-                    self.machine_slots[m_name].append(int(op.start))
+                    temp_slots[m_name].append((int(op.start), int(op.duration)))
         
-        for m in self.machine_slots:
-            self.machine_slots[m].sort()
+        self.machine_slots.clear()
+        self.machine_slot_durations.clear()
+        
+        for m, entries in temp_slots.items():
+            entries.sort(key=lambda x: x[0])
+            self.machine_slots[m] = [x[0] for x in entries]
+            self.machine_slot_durations[m] = [x[1] for x in entries]
 
     def select_by_priority(self, conflict_ops: List[JobOperation], rule: str) -> Optional[JobOperation]:
         if not conflict_ops: return None
@@ -97,30 +109,38 @@ class Scheduler:
         def _job_earliest_start(op): return op.job_earliest_start
         def _rem_work(op): return op.job.sum_left_duration(op.position_number)
         def _job_id(op): return op.job_id
-        
         def _slack(op): 
             if op.start is None: return 999999
             return _due_date(op) - (op.start + _rem_work(op))
-        
         def _start_deviation(op):
             prev_op = self.previous_schedule_jobs_collection.get_operation(op.job_id, op.position_number)
             if prev_op and op.start is not None:
                 return prev_op.start - op.start
             return None
             
-        def _distance_to_slot(op):
+        def _fit_to_slot_score(op):
             if op.start is None: return 999999
             m_name = str(op.machine_name).strip()
-            slots = self.machine_slots.get(m_name, [])
-            if not slots: return 0
-            idx = bisect.bisect_left(slots, op.start)
-            diff = float('inf')
-            if idx > 0: diff = min(diff, abs(op.start - slots[idx - 1]))
-            if idx < len(slots): diff = min(diff, abs(op.start - slots[idx]))
-            return diff
+            starts = self.machine_slots.get(m_name, [])
+            durations = self.machine_slot_durations.get(m_name, [])
+            if not starts: return 0
+            idx = bisect.bisect_left(starts, op.start)
+            score = float('inf')
+            if idx > 0:
+                s_old, d_old = starts[idx-1], durations[idx-1]
+                score = min(score, abs(op.start-s_old) + abs(op.duration-d_old))
+            if idx < len(starts):
+                s_old, d_old = starts[idx], durations[idx]
+                score = min(score, abs(op.start-s_old) + abs(op.duration-d_old))
+            return score
 
         # --- REGELN ---
-        if rule == "DEVIATION_INSERT":
+        if rule == "MACHINE_SLOT":
+            # Zähler erhöhen
+            self.metrics["slot_rule_decisions"] += 1
+            return min(conflict_ops, key=lambda x: (_fit_to_slot_score(x), _slack(x)))
+
+        elif rule == "DEVIATION_INSERT":
             k_old, k_new = [], []
             for op in conflict_ops:
                 prev_op = self.previous_schedule_jobs_collection.get_operation(op.job_id, op.position_number)
@@ -156,9 +176,6 @@ class Scheduler:
                 return ALPHA * ref_start + (1 - ALPHA) * latest_start
             return min(conflict_ops, key=lambda x: (_wrc_score(x), _job_earliest_start(x)))
 
-        elif rule == "MACHINE_SLOT":
-            return min(conflict_ops, key=lambda x: (_distance_to_slot(x), _slack(x)))
-
         elif rule == "SPT": return min(conflict_ops, key=lambda x: (_duration(x), _arrival(x), _job_id(x)))
         elif rule == "FCFS": return min(conflict_ops, key=lambda x: (_arrival(x), _duration(x), _job_id(x)))
         elif rule == "EDD": return min(conflict_ops, key=lambda x: (_due_date(x), _arrival(x), _job_id(x)))
@@ -169,7 +186,6 @@ class Scheduler:
 
     def get_schedule(self, priority_rule: str = "SPT", add_overlap_to_conflict: bool = True):
         schedule_result = LiveJobCollection()
-        planned = 0
         loop_guard = 0
         max_loops = self.total_ops * 5
 
@@ -186,9 +202,6 @@ class Scheduler:
                     est = max(self.machine_ready_time[op.machine_name], job.current_operation_earliest_start)
                     eft = est + op.duration
                     
-                    # --- HARD CUT ---
-                    # Wenn die Operation nicht mehr in die Schicht passt, ignorieren wir sie für diese Runde.
-                    # Sie wird dann vom Experiment-Skript in den Backlog für die nächste Schicht gepackt.
                     if eft > self.schedule_end:
                         continue 
 
@@ -212,6 +225,12 @@ class Scheduler:
             conflict_ops = [o for o in ops_on_m if o.start < min_eft]
             if not conflict_ops: conflict_ops = [o for o in ops_on_m if o.end == min_eft]
 
+            # --- METRIKEN UPDATE ---
+            self.metrics["total_decisions"] += 1
+            if len(conflict_ops) > 1:
+                self.metrics["real_choices"] += 1
+            # -----------------------
+
             selected_op = self.select_by_priority(conflict_ops, priority_rule)
 
             if selected_op:
@@ -222,7 +241,6 @@ class Scheduler:
                 self.machine_ready_time[selected_op.machine_name] = selected_op.end
                 schedule_result.add_operation_instance(selected_op)
                 
-                # Cleanup nicht gewählte Kandidaten
                 for op in all_valid_candidates:
                     if op != selected_op:
                         op.start = None; op.end = None
