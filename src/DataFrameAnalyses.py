@@ -31,15 +31,6 @@ class DataFrameChecker:
 
         This includes verifying that operations assigned to the same machine do not overlap,
         and that all operations within a job are executed in the correct technological sequence without overlaps.
-
-        :param df_schedule: DataFrame containing the schedule to be validated.
-        :param job_id_column: Column used to group operations by job.
-        :param machine_column: Column indicating the machine/resource.
-        :param operation_column: Column indicating the operation.
-        :param earliest_start_column: Column indicating the earliest start time.
-        :param start_column: Column with actual start times.
-        :param end_column: Column with end times.
-        :return: True if all checks pass, otherwise False.
         """
         checks_passed = True
         if not cls._is_machine_conflict_free(df_schedule, machine_column, start_column, end_column):
@@ -58,15 +49,6 @@ class DataFrameChecker:
     def _is_machine_conflict_free(
             df_schedule: pd.DataFrame, machine_column: str = "Machine", start_column: str = "Start",
             end_column: str = "End") -> bool:
-        """
-        Check if the schedule is free of machine conflicts.
-
-        :param df_schedule: Schedule DataFrame.
-        :param machine_column: Column name for machine IDs.
-        :param start_column: Column name for start times.
-        :param end_column: Column name for end times.
-        :return: True if no conflicts, False otherwise.
-        """
         df = df_schedule.sort_values([machine_column, start_column]).reset_index()
         conflict_indices = []
 
@@ -94,18 +76,6 @@ class DataFrameChecker:
     def _is_job_timing_correct(
             cls, df_schedule: pd.DataFrame, job_id_column: str = "Job", operation_column: str = "Operation",
             start_column: str = "Start", end_column: str = "End") -> bool:
-        """
-        Check whether technological dependencies within each job are respected.
-
-        An operation must not start before its predecessor has finished.
-
-        :param df_schedule: DataFrame with columns [job_id_column, operation_column, start_column, end_column].
-        :param job_id_column: Column used to group operations (default: "Job").
-        :param operation_column: Column indicating operation sequence (default: "Operation").
-        :param start_column: Column for operation start times (default: "Start").
-        :param end_column: Column for operation end times (default: "End").
-        :return: True if all jobs follow correct timing, otherwise False.
-        """
         violations = []
 
         for group_id, grp in df_schedule.groupby(job_id_column):
@@ -124,7 +94,6 @@ class DataFrameChecker:
         for group_id, op, start, prev_end in violations:
             print(f"  {job_id_column} {group_id!r}, Operation {op}: Start={start}, but previous ended at {prev_end}")
 
-        # Additional check: is the start-based sequence consistent with operation order?
         print("\n> Checking whether the operation sequence by start time matches the technological order:")
         cls._is_operation_sequence_correct(
             df_schedule=df_schedule,
@@ -138,15 +107,6 @@ class DataFrameChecker:
     def _is_operation_sequence_correct(
             df_schedule: pd.DataFrame, job_id_column: str = "Job", operation_column: str = "Operation",
             start_column: str = "Start") -> bool:
-        """
-        Check if the operation sequence by start time matches the expected technological order.
-
-        :param df_schedule: DataFrame with [job_id_column, operation_column, start_column].
-        :param job_id_column: Column used to group operations (default: "Job").
-        :param operation_column: Column indicating operation order (default: "Operation").
-        :param start_column: Column with operation start times (default: "Start").
-        :return: True if all groups follow correct order, else False.
-        """
         violations = []
 
         for group_id, grp in df_schedule.groupby(job_id_column):
@@ -171,18 +131,6 @@ class DataFrameChecker:
     def _is_start_correct(
             df_schedule: pd.DataFrame, job_column: str = "Job", start_column: str = "Start",
             earliest_start_column: str = "Ready Time", verbose: bool = True) -> Optional[bool]:
-        """
-        Check if all operations in df_schedule start no earlier than the allowed earliest start time.
-
-        Assumes df_schedule already contains the earliest start column.
-
-        :param df_schedule: DataFrame with scheduled operations (must contain start and earliest start columns).
-        :param job_column: Column identifying jobs.
-        :param start_column: Column with actual start times.
-        :param earliest_start_column: Column with the earliest allowed start times.
-        :param verbose: Print a short report.
-        :return: True if all starts are valid, else False. If required columns are missing, returns True and prints a note.
-        """
         required_cols = {job_column, start_column, earliest_start_column}
         missing = required_cols - set(df_schedule.columns)
         if missing:
@@ -207,15 +155,6 @@ class DataFrameChecker:
     def is_duration_correct(
             df_schedule: pd.DataFrame, start_column: str = "Start", end_column: str = "End",
             duration_column: str = "Processing Time") -> bool:
-        """
-        Check whether each operation's duration matches the difference between end and start time.
-
-        :param df_schedule: DataFrame with start, end, and duration columns.
-        :param start_column: Column name for start times (default: "Start").
-        :param end_column: Column name for end times (default: "End").
-        :param duration_column: Column name for durations (default: "Processing Time").
-        :return: True if all durations are correct, otherwise False.
-        """
         expected_durations = df_schedule[end_column] - df_schedule[start_column]
         violations = df_schedule[expected_durations != df_schedule[duration_column]]
 
@@ -238,28 +177,13 @@ class DataFrameMetricsAnalyser:
             df_jobs_metrics: pd.DataFrame, column: Literal["Lateness", "Tardiness", "Earliness"] = "Lateness",
             steps: int = 60, min_val: int = -120, max_val: int = 120,
             right_closed: bool = False) -> pd.DataFrame:
-        """
-        Aggregates a column of job metrics (e.g., Tardiness or Lateness) into labeled bins.
-        Returns a one-row DataFrame with bin labels as columns and counts as values.
-
-        :param df_jobs_metrics: Input DataFrame containing the column to aggregate.
-        :param column: Metric to aggregate. Must be one of: 'Lateness', 'Tardiness', 'Earliness'.
-        :param steps: Width of each bin.
-        :param min_val: Minimum value for binning.
-        :param max_val: Maximum absolute value for binning.
-        :param right_closed: Whether bins include the right edge (default: False).
-        :return: A one-row DataFrame with bin labels as column names and counts as values.
-        """
-
-        # 1. Check that the specified column exists
         if column not in df_jobs_metrics.columns:
             raise ValueError(f"Column '{column}' does not exist. Available columns: {list(df_jobs_metrics.columns)}")
 
-        # 2. Define bin boundaries
         if column in ['Tardiness', 'Earliness']:
             min_val = 0
             inner_bins = list(range(min_val, max_val + steps, steps))
-            bins = inner_bins + [np.inf]  # no -inf for always-positive metrics
+            bins = inner_bins + [np.inf]
         else:
             inner_bins = list(range(min_val, max_val + steps, steps))
             if 0 not in inner_bins:
@@ -267,11 +191,9 @@ class DataFrameMetricsAnalyser:
                 inner_bins = sorted(inner_bins)
             bins = [-np.inf] + inner_bins + [np.inf]
 
-        # 3. Count zero values separately
         zero_count = (df_jobs_metrics[column] == 0).sum()
         non_zero = df_jobs_metrics.loc[df_jobs_metrics[column] != 0, column]
 
-        # 4. Define bin labels and sorting keys
         labels = []
         bin_keys = []
         for lo, hi in zip(bins[:-1], bins[1:]):
@@ -285,20 +207,16 @@ class DataFrameMetricsAnalyser:
                 labels.append(f"{int(lo)} - {int(hi)}")
                 bin_keys.append((lo + hi) / 2)
 
-        # 5. Apply binning to non-zero values
         grouped = pd.cut(non_zero, bins=bins, labels=labels, right=right_closed, include_lowest=True)
         counts = grouped.value_counts().reindex(labels, fill_value=0)
 
-        # 6. Add the count for exact zero
         counts["0"] = zero_count
         bin_keys.append(0)
         labels.append("0")
 
-        # 7. Sort bins using sort keys
         sort_df = pd.DataFrame({f'{column}_Interval': labels, 'key': bin_keys}).set_index(f'{column}_Interval')
         sorted_counts = counts.loc[sort_df.sort_values('key').index]
 
-        # 8. Return result as a single-row DataFrame
         return pd.DataFrame([sorted_counts])
 
 
@@ -312,20 +230,10 @@ class DataFramePlotGenerator:
 
     @classmethod
     def _get_color(cls, idx):
-        """
-        Generate a distinct color from the tab20 colormap with index correction
-        and layer-based variation to extend the palette.
-        - Adjusts RGB values for every 16-color cycle to create new color shades.
-        :param idx: Integer index of the item
-        :return: Hex color code as string
-        """
         base_idx = idx % 16
         layer = idx // 16
-        # --- Adjustment: skip index 6 ---
         if base_idx >= 6:
             base_idx += 1
-
-        # Scale to 20 colors
         rgba = cls.tab20(base_idx / 20)
         r, g, b, _ = rgba
         if layer == 1:
@@ -341,28 +249,11 @@ class DataFramePlotGenerator:
             df_times: pd.DataFrame, routing_column: str = "Routing_ID", earliest_start_column: str = "Ready Time",
             simulated_end_column: str = "End", total_duration_column: str = "Total Processing Time",
             bins: int = 30, y_max: float = 0.002):
-        """
-        Plot density histograms of elapsed times per routing group.
-
-        Elapsed time = simulated_end_column - earliest_start_column.
-        Each subplot shows the density distribution for one routing,
-        with a dashed line for the mean elapsed time.
-
-        :param df_times: DataFrame with routing and timing data.
-        :param routing_column: Column with routing IDs.
-        :param earliest_start_column: Column with the earliest start times.
-        :param simulated_end_column: Column with simulated end times.
-        :param total_duration_column: Column with total processing times.
-        :param bins: Number of histogram bins.
-        :param y_max: Max y-axis value (density).
-        :return: Matplotlib Figure with subplots.
-        """
         routings = df_times[routing_column].unique()
         n_routings = len(routings)
         n_cols = min(4, n_routings)
         n_rows = int(np.ceil(n_routings / n_cols))
 
-        # Global x-axis range
         elapsed_times = df_times[simulated_end_column] - df_times[earliest_start_column]
         x_max = elapsed_times.max()
 
@@ -373,30 +264,18 @@ class DataFramePlotGenerator:
             ax: Axes = axes[idx]  # type: ignore
             dfr = df_times[df_times[routing_column] == routing]
 
-            # Average actual elapsed time = simulated end - earliest start
             avg_elapsed_times = dfr[simulated_end_column] - dfr[earliest_start_column]
             avg_elapsed_time = avg_elapsed_times.mean()
 
-            duration = dfr[total_duration_column].mean()  # .first()
+            duration = dfr[total_duration_column].mean()
 
             sns.histplot(
                 avg_elapsed_times, bins=bins, kde=True, stat="density",
                 ax=ax, color="cornflowerblue", edgecolor="black"
             )
 
-            ax.axvline(
-                duration,
-                color="gray",
-                linestyle="--",
-                label="Duration"
-            )
-
-            ax.axvline(
-                avg_elapsed_time,
-                color='orange',
-                linestyle='--',
-                label="Avg. elapsed time"
-            )
+            ax.axvline(duration, color="gray", linestyle="--", label="Duration")
+            ax.axvline(avg_elapsed_time, color='orange', linestyle='--', label="Avg. elapsed time")
 
             ax.set_title(f'Routing {routing}')
             ax.set_xlabel("Elapsed time [min]\n(simulated end - earliest start)")
@@ -405,7 +284,6 @@ class DataFramePlotGenerator:
             ax.set_ylim(0, y_max)
             ax.legend()
 
-        # Remove unused subplot axes
         for j in range(n_routings, len(axes)):
             fig.delaxes(axes[j])  # type: ignore
 
@@ -423,41 +301,26 @@ class DataFramePlotGenerator:
             bins: int = 30,
             y_max: float = 0.002,
             x_max: float | None = None):
-        """
-        Plot density histograms of elapsed times per routing group.
-        → Gemeinsame Y-Achse (Skala nur beim ersten Plot)
-        → Jede X-Achse startet bei 0.
-        → Optionaler Routing-Filter.
-        → Nur beim letzten Subplot: X-Achsenbeschriftung & Legende (oben rechts außen).
-        → Optional: globales x_max zur Angleichung der X-Achsenbreite.
-
-        Elapsed time = simulated_end_column - earliest_start_column
-        """
-
         import matplotlib.pyplot as plt
         import seaborn as sns
         import numpy as np
         import pandas as pd
 
-        # 🔹 1) Optionaler Filter
         if routing_filter is not None:
             df_times = df_times[df_times[routing_column].isin(routing_filter)]
 
         routings = df_times[routing_column].unique()
         n_routings = len(routings)
 
-        # 🔹 2) Figure mit gemeinsamer Y-Achse
         fig, axes = plt.subplots(1, n_routings, figsize=(5 * n_routings, 4), sharey=True)
         if n_routings == 1:
             axes = [axes]
 
-        # 🔹 3) Globale Wertebereiche bestimmen
         elapsed_times_all = df_times[simulated_end_column] - df_times[earliest_start_column]
         global_y_max = y_max or (0.002 * (n_routings / 2))
         if x_max is None:
             x_max = float(elapsed_times_all.max() * 1.1)
 
-        # 🔹 4) Subplots erzeugen
         for idx, routing in enumerate(routings):
             ax = axes[idx]
             dfr = df_times[df_times[routing_column] == routing]
@@ -467,13 +330,8 @@ class DataFramePlotGenerator:
             duration = dfr[total_duration_column].mean()
 
             sns.histplot(
-                elapsed_times,
-                bins=bins,
-                kde=True,
-                stat="density",
-                ax=ax,
-                color="cornflowerblue",
-                edgecolor="black"
+                elapsed_times, bins=bins, kde=True, stat="density",
+                ax=ax, color="cornflowerblue", edgecolor="black"
             )
 
             ax.axvline(duration, color="gray", linestyle="--", label="Σ op duration")
@@ -481,7 +339,6 @@ class DataFramePlotGenerator:
 
             ax.set_title(f"Routing {routing}")
 
-            # ✅ Nur beim ersten Subplot Y-Achse mit Skala
             if idx == 0:
                 ax.set_ylabel("Density [1/min]")
                 ax.tick_params(axis="y", left=True, labelleft=True)
@@ -491,14 +348,12 @@ class DataFramePlotGenerator:
                 ax.tick_params(axis="y", left=False, labelleft=False)
                 ax.spines["left"].set_visible(True)
 
-            # ✅ Nur beim letzten Subplot X-Label & Legende
             if idx == n_routings - 1:
                 ax.set_xlabel("Timespan from earliest start [min]", ha="right", x=1.0)
                 ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
             else:
                 ax.set_xlabel("")
 
-            # ✅ Einheitliche Achsen
             ax.set_xlim(0, x_max)
             ax.set_ylim(0, global_y_max)
 
@@ -512,28 +367,11 @@ class DataFramePlotGenerator:
             df_times: pd.DataFrame, routing_column: str = "Routing_ID",
             earliest_start_column: str = "Ready Time", due_date_column: str = "Due Date",
             total_duration_column: str = "Total Processing Time", bins: int = 30, y_max: float = 0.002):
-        """
-        Plot density histograms of scheduling windows per routing group.
-
-        Scheduling window = due_date_column - earliest_start_column.
-        Each subplot shows the density distribution for one routing,
-        with a dashed line for the mean scheduling window.
-
-        :param df_times: DataFrame with routing and timing data.
-        :param routing_column: Column with routing IDs.
-        :param earliest_start_column: Column with the earliest start times.
-        :param due_date_column: Column with due dates.
-        :param total_duration_column: Column with total processing times.
-        :param bins: Number of histogram bins.
-        :param y_max: Max y-axis value (density).
-        :return: Matplotlib Figure with subplots.
-        """
         routings = df_times[routing_column].unique()
         n_routings = len(routings)
         n_cols = min(4, n_routings)
         n_rows = int(np.ceil(n_routings / n_cols))
 
-        # Global x-axis range
         all_scheduling_windows = df_times[due_date_column] - df_times[earliest_start_column]
         x_max = all_scheduling_windows.max()
 
@@ -544,7 +382,6 @@ class DataFramePlotGenerator:
             ax: Axes = axes[idx]  # type: ignore
             dfr = df_times[df_times[routing_column] == routing]
 
-            # Scheduling window = due date - earliest start
             scheduling_windows = dfr[due_date_column] - dfr[earliest_start_column]
             avg_scheduling_window = scheduling_windows.mean()
 
@@ -555,19 +392,8 @@ class DataFramePlotGenerator:
                 ax=ax, color="cornflowerblue", edgecolor="black"
             )
 
-            ax.axvline(
-                duration,
-                color="gray",
-                linestyle="--",
-                label="Duration"
-            )
-
-            ax.axvline(
-                avg_scheduling_window,
-                color="orange",
-                linestyle="--",
-                label="Avg. scheduling window"
-            )
+            ax.axvline(duration, color="gray", linestyle="--", label="Duration")
+            ax.axvline(avg_scheduling_window, color="orange", linestyle="--", label="Avg. scheduling window")
 
             ax.set_title(f'Routing {routing}')
             ax.set_xlabel("Scheduling time window [min]\n(due date - earliest start)")
@@ -576,7 +402,6 @@ class DataFramePlotGenerator:
             ax.set_ylim(0, y_max)
             ax.legend()
 
-        # Remove unused subplot axes
         for j in range(n_routings, len(axes)):
             fig.delaxes(axes[j])  # type: ignore
 
@@ -631,24 +456,21 @@ class DataFramePlotGenerator:
             ax.axvline(avg_scheduling_window, color="orange", linestyle="--", label="Ø scheduling window")
             ax.set_title(f"Routing {routing}")
 
-            # --- Y-Achse: nur beim ersten Subplot Ticks & Label anzeigen ---
             if idx == 0:
                 ax.set_ylabel("Density [1/min]")
-                ax.tick_params(axis="y", which="both", left=True, labelleft=True)  # ← Ticks/Labels erzwingen
+                ax.tick_params(axis="y", which="both", left=True, labelleft=True)
                 ax.spines["left"].set_visible(True)
             else:
                 ax.set_ylabel("")
-                ax.tick_params(axis="y", which="both", left=False, labelleft=False)  # ← Ticks/Labels aus
-                ax.spines["left"].set_visible(True)  # Rahmen bleibt geschlossen
+                ax.tick_params(axis="y", which="both", left=False, labelleft=False)
+                ax.spines["left"].set_visible(True)
 
-            # --- X-Achse: nur beim letzten Subplot Label, rechtsbündig ---
             if idx == n_routings - 1:
                 ax.set_xlabel("Timespan from earliest start [min]", ha="right", x=1.0)
                 ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False)
             else:
                 ax.set_xlabel("")
 
-            # Limits einheitlich
             ax.set_xlim(0, x_max)
             ax.set_ylim(0, global_y_max)
 
@@ -660,9 +482,14 @@ class DataFramePlotGenerator:
     def get_gantt_chart_figure(
             cls, df_workflow: pd.DataFrame, title: str = "Gantt chart",
             job_column: str = "Job", machine_column: str = "Machine", duration_column: str = "Processing Time",
-            perspective: Literal["Machine", "Job"] = "Machine"):
+            perspective: Literal["Machine", "Job"] = "Machine",
+            # --- NEU: Optionaler DataFrame für Referenz-Linien ---
+            reference_df: Optional[pd.DataFrame] = None,
+            start_column: str = "Start"
+            ):
         """
         Create a Gantt chart figure from either a job or machine perspective.
+        Optional: Draws red lines for start times from reference_df (e.g. previous shift).
 
         :param df_workflow: DataFrame containing scheduling or simulation data
         :param title: Title of the chart
@@ -670,6 +497,8 @@ class DataFramePlotGenerator:
         :param machine_column: Column name identifying machines
         :param duration_column: Column name for operation durations
         :param perspective: Either "Job" (job-centric view) or "Machine" (machine-centric view)
+        :param reference_df: Optional DataFrame with reference start times (e.g. from previous shift)
+        :param start_column: Column name for start times
         :return: Matplotlib Figure object
         """
 
@@ -687,23 +516,48 @@ class DataFramePlotGenerator:
         groups = sorted(df_workflow[group_column].unique())
         color_items = sorted(df_workflow[color_column].unique())
         y_ticks = range(len(groups))
+        
+        # Mapping von Gruppen-Namen zu Y-Achsen-Index für Referenzlinien
+        group_to_y_idx = {g: i for i, g in enumerate(groups)}
+
         color_map = {item: cls._get_color(i) for i, item in enumerate(color_items)}
 
         fig_height = len(groups) * 0.8
         fig, ax = plt.subplots(figsize=(16, fig_height))
 
+        # 1. Haupt-Balken zeichnen
         for idx, group in enumerate(groups):
             rows = df_workflow[df_workflow[group_column] == group]
             for _, row in rows.iterrows():
                 ax.barh(idx,
                         row[duration_column],
-                        left=row['Start'],
+                        left=row[start_column],
                         height=0.5,
                         color=color_map[row[color_column]],
-                        edgecolor='black')
+                        edgecolor='black',
+                        zorder=2) # zorder ensures bars are above grid
+
+        # 2. NEU: Referenz-Linien (Vorgänger-Shift) zeichnen
+        if reference_df is not None and not reference_df.empty:
+            for _, row in reference_df.iterrows():
+                group_val = row[group_column] # z.B. "M01" (wenn perspective="Machine")
+                
+                # Nur zeichnen, wenn die Maschine im aktuellen Plot existiert
+                if group_val in group_to_y_idx:
+                    y_pos = group_to_y_idx[group_val]
+                    x_pos = row[start_column]
+                    
+                    # Zeichne rote vertikale Linie über die Höhe des Balkens
+                    ax.plot([x_pos, x_pos], [y_pos - 0.4, y_pos + 0.4], 
+                            color='red', linewidth=2, linestyle='-', zorder=3, alpha=0.8)
 
         # Legend
         legend_handles = [mpatches.Patch(color=color_map[item], label=str(item)) for item in color_items]
+        
+        # Füge Legende für rote Linie hinzu, falls Referenzdaten da sind
+        if reference_df is not None:
+             legend_handles.append(plt.Line2D([0], [0], color='red', linewidth=2, label='Prev. Shift Start'))
+
         legend_columns = (len(color_items) // 35) + 1
         ax.legend(handles=legend_handles,
                   title=color_column,
@@ -721,16 +575,16 @@ class DataFramePlotGenerator:
         ax.set_xlabel("Time (in minutes)")
         ax.set_ylabel(y_label)
         ax.set_title(title)
-        ax.grid(True, axis='y', linestyle='--', alpha=0.6)
+        ax.grid(True, axis='y', linestyle='--', alpha=0.6, zorder=0)
 
         # Time axis scaling
-        max_time = (df_workflow['Start'] + df_workflow[duration_column]).max()
-        x_start = int((df_workflow['Start'].min() // 1440) * 1440)
+        max_time = (df_workflow[start_column] + df_workflow[duration_column]).max()
+        x_start = int((df_workflow[start_column].min() // 1440) * 1440)
         ax.set_xlim(x_start, max_time + 60)
 
         x_ticks = list(range(x_start, int(max_time) + 360, 360))
         ax.set_xticks(x_ticks)
-        ax.grid(True, axis='x', linestyle='--', alpha=0.6)
+        ax.grid(True, axis='x', linestyle='--', alpha=0.6, zorder=0)
 
         # Vertical lines every 1440 minutes (e.g., day delimiter)
         for x in range(x_start, int(max_time) + 1440, 1440):

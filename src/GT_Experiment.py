@@ -7,18 +7,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages 
 
-# Import für das Plotting (Fallback-sicher)
 try:
     from src.analyses.fig_gantt import DataFramePlotGenerator
 except ImportError:
     from src.DataFrameAnalyses import DataFramePlotGenerator
 
-# Metriken Import
 try:
     from src.analyses.stability_metrics import calculate_stability_metrics
 except ImportError:
     calculate_stability_metrics = None
-    print("Warnung: Metriken-Modul nicht gefunden.")
 
 from config.project_config import get_solver_logs_path
 
@@ -32,7 +29,6 @@ from src.solvers.GT_Scheduler import Scheduler
 
 
 def schedule_to_dataframe(schedule_jobs_collection: LiveJobCollection) -> pd.DataFrame:
-    """Wandelt den aktuellen Schedule in einen DataFrame um."""
     rows = []
     for job in schedule_jobs_collection.values():
         job_label = job.id 
@@ -49,7 +45,6 @@ def schedule_to_dataframe(schedule_jobs_collection: LiveJobCollection) -> pd.Dat
 
 
 def create_schedule_snapshot(collection: LiveJobCollection) -> LiveJobCollection:
-    """Erstellt eine tiefe Kopie des Schedules (Snapshot für Vergleich)."""
     snapshot = LiveJobCollection()
     for job in collection.values():
         new_job = LiveJob(id=job.id, routing_id=job.routing_id, arrival=job.arrival, due_date=job.due_date)
@@ -65,32 +60,24 @@ def create_schedule_snapshot(collection: LiveJobCollection) -> LiveJobCollection
 
 
 def get_unscheduled_backlog(input_collection: LiveJobCollection, scheduled_collection: LiveJobCollection) -> list:
-    """
-    Findet Operationen, die im Input waren, aber nicht im Schedule (Zeitlimit).
-    Erstellt Kopien für die nächste Schicht.
-    """
     backlog = []
     for job_id, in_job in input_collection.items():
         scheduled_job = scheduled_collection.get(job_id)
         
         last_planned_pos = -1
         if scheduled_job:
-            # Finde die letzte geplante Operation
             for op in scheduled_job.operations:
                 if op.start is not None and op.position_number > last_planned_pos:
                     last_planned_pos = op.position_number
         
-        # Alle Ops danach kommen in den Backlog für morgen
         future_ops = [op for op in in_job.operations if op.position_number > last_planned_pos]
         
         if future_ops:
             sliced_job = copy.copy(in_job)
             sliced_job.operations = future_ops
             sliced_job.current_operation = None
-            # Reset der Zeiten für den Neustart
             for op in sliced_job.operations:
-                op.start = None
-                op.end = None
+                op.start = None; op.end = None
             backlog.append(sliced_job)
     return backlog
 
@@ -105,7 +92,6 @@ def run_experiment(
     sim_sigma: float,
 ) -> None:
 
-    # 1. Setup
     simulation = ProductionSimulation(verbose=False, shift_length=shift_length)
 
     logs_root = get_solver_logs_path()
@@ -119,7 +105,7 @@ def run_experiment(
     pdf = PdfPages(pdf_path)
     print(f"--> Gantt-Chart: {pdf_path}")
 
-    # 2. Daten Laden & LiveJob Konvertierung
+    # Daten laden
     orm_jobs = JobQuery.get_by_source_name_max_util_and_lt_arrival(
         source_name=source_name, max_bottleneck_utilization=Decimal(f"{max_bottleneck_utilization}"),
         arrival_limit=60 * 24 * total_shift_number,
@@ -134,7 +120,6 @@ def run_experiment(
             real_ops.append(new_op)
         lj.operations = real_ops
         live_jobs_list.append(lj)
-
     jobs_collection = LiveJobCollection(live_jobs_list)
 
     machines_instances = MachineInstanceQuery.get_by_source_name_and_max_bottleneck_utilization(
@@ -157,11 +142,9 @@ def run_experiment(
 
     # Collections
     previous_schedule_snapshot = LiveJobCollection()
-    first_schedule_snapshot = None
-    
     active_job_ops_collection = LiveJobCollection()
     waiting_job_ops_collection = LiveJobCollection()
-    backlog_jobs_list = [] # Backlog für den Scheduler
+    backlog_jobs_list = [] 
 
     metrics_records = []
 
@@ -171,16 +154,13 @@ def run_experiment(
         shift_end = shift_number * shift_length
         print(f"\n--- Exp {experiment_id} | Shift {shift_number} | {priority_rule} ---")
 
-        # A) Job-Zusammenstellung
+        # A) Jobs
         new_jobs = jobs_collection.get_subset_by_earliest_start(earliest_start=shift_start)
         
         combined_jobs = []
-        # 1. Ganz neue Jobs
         combined_jobs.extend(new_jobs.values())
-        # 2. Backlog aus der letzten Schicht (wegen Zeitlimit)
         combined_jobs.extend(backlog_jobs_list)
         
-        # 3. Wartende Jobs (Simulation) filtern
         sim_finished = simulation.get_entire_finished_operation_collection()
         sim_active = simulation.get_active_operation_collection()
         
@@ -206,58 +186,73 @@ def run_experiment(
         scheduler = Scheduler(
             jobs_collection=current_jobs_collection,
             schedule_start=shift_start,
-            schedule_end=shift_end # <--- TIME LIMIT
+            schedule_end=shift_end
         )
         scheduler.set_active_jobs_collection(active_job_ops_collection)
         scheduler.set_previous_schedule_jobs_collection(previous_schedule_snapshot)
 
         current_schedule_result = scheduler.get_schedule(priority_rule=priority_rule)
-        
-        # C) Backlog für nächste Runde berechnen
+
+        # C) Backlog
         backlog_jobs_list = get_unscheduled_backlog(current_jobs_collection, current_schedule_result)
         if backlog_jobs_list:
-            print(f"-> {len(backlog_jobs_list)} Jobs wegen Zeitlimit in nächste Schicht verschoben.")
+            print(f"-> {len(backlog_jobs_list)} Jobs (teilw.) in nächste Schicht verschoben.")
 
         # D) Metriken
-        # C) Metriken
         if shift_number > 1 and calculate_stability_metrics:
             metrics = calculate_stability_metrics(current_schedule_result, previous_schedule_snapshot)
-            
-            # Erweiterter Print
-            print(f"   Masch-Stab: SlotDev={metrics['SlotDev_Avg']:.1f}m | HitRate={metrics['SlotHit_Rate']:.1f}%")
+            print(f"📊 Metriken: SlotDev={metrics['SlotDev_Avg']:.1f}m | HitRate={metrics['SlotHit_Rate']:.1f}%")
             
             metrics_records.append({
-                "Experiment_ID": experiment_id, 
-                "Priority_Rule": priority_rule, 
-                "Shift": shift_number,
+                "Experiment_ID": experiment_id, "Priority_Rule": priority_rule, "Shift": shift_number,
                 "Comparison": "Vs_Previous_Shift",
-                # NEUE METRIKEN
-                "SlotDev_Avg": metrics['SlotDev_Avg'],
-                "SlotHit_Rate": metrics['SlotHit_Rate']
+                "SlotDev_Avg": metrics['SlotDev_Avg'], "SlotHit_Rate": metrics['SlotHit_Rate']
             })
-
-        # Snapshot Management
-        if shift_number == 1:
-            first_schedule_snapshot = create_schedule_snapshot(current_schedule_result)
-        previous_schedule_snapshot = create_schedule_snapshot(current_schedule_result)
+        elif shift_number == 1:
+             metrics_records.append({
+                "Experiment_ID": experiment_id, "Priority_Rule": priority_rule, "Shift": 1,
+                "Comparison": "Initial", "SlotDev_Avg": 0, "SlotHit_Rate": 100
+            })
 
         # E) Speichern
         ExperimentQuery.save_schedule_jobs(experiment_id, shift_number, current_schedule_result.values())
 
-        # F) Gantt Plot
+        # F) GANTT PLOT
         df_shift = schedule_to_dataframe(current_schedule_result)
+        
+        # NEU: Vorbereiten der Referenz-Daten (Previous Plan)
+        df_prev_plot = None
+        if shift_number > 1:
+            df_prev = schedule_to_dataframe(previous_schedule_snapshot)
+            if not df_prev.empty:
+                df_prev_plot = df_prev.copy()
+                # Relative Zeit für Referenzlinien berechnen
+                # Previous Shift startete bei shift_start - shift_length
+                prev_shift_start = shift_start - shift_length
+                # Wir wollen die Startzeit im Kontext der aktuellen Schicht (relativ zu 0) sehen.
+                # Achtung: Die Startzeit im Snapshot ist ABSOLUT (z.B. 1450).
+                # Wenn wir Shift 2 plotten (Start 1440), wollen wir, dass 1450 als 10 dargestellt wird.
+                # Aber Moment: "Previous Schedule" sind die Operationen, die in Shift 1 liefen (0-1440).
+                # MACHINE SLOT bedeutet: Wenn in Shift 1 bei Minute 10 was lief, soll in Shift 2 bei Minute 1450 (1440+10) was laufen.
+                # Also müssen wir die alten Zeiten auf das 0-1440 Raster normalisieren.
+                if "Start" in df_prev_plot.columns:
+                    df_prev_plot["Start"] = df_prev_plot["Start"] - prev_shift_start
+        
         if not df_shift.empty:
             df_plot = df_shift.copy()
-            # Keine Relativierung, da wir absolute Zeiten mit xlim nutzen
+            # Relative Startzeit für den Plot (damit X-Achse bei 0 anfängt)
+            if "Start" in df_plot.columns:
+                df_plot["Start"] = df_plot["Start"] - shift_start
             
             try:
                 fig = DataFramePlotGenerator.get_gantt_chart_figure(
                     df_workflow=df_plot,
                     title=f"Exp {experiment_id} ({priority_rule}) - Shift {shift_number}",
-                    job_column="Job", machine_column="Machine", duration_column="Processing Time", perspective="Machine"
+                    job_column="Job", machine_column="Machine", duration_column="Processing Time", perspective="Machine",
+                    # NEU: Referenzdaten übergeben
+                    reference_df=df_prev_plot
                 )
-                # Optische Begrenzung
-                plt.xlim(shift_start, shift_end + 60) 
+                plt.xlim(0, shift_length + 60) 
                 
                 pdf.savefig(fig)
                 plt.close(fig) 
@@ -266,7 +261,9 @@ def run_experiment(
         else:
             print(f"-> Keine Operationen in Shift {shift_number} geplant.")
 
-        # G) Simulation
+        # G) Snapshot & Simulation
+        previous_schedule_snapshot = create_schedule_snapshot(current_schedule_result)
+
         if shift_number == 1:
             simulation.initialize_run(schedule_collection=current_schedule_result, start_time=shift_start)
         else:
